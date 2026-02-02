@@ -3,13 +3,12 @@ from pathlib import Path
 from typing import List, Optional
 from sqlmodel import Session, select
 import uuid
-
-from ..models import Document, DocSegment, ProcessingState
+from ..models import Document, DocSegment, ProcessingState, EntityAnchor, AnchorType
 from ..db import get_session
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst"}
 
-def segment_documents(workspace_name: str = "default", session: Session = None) -> int:
+def segment_documents(workspace_name: str = "default", session: Optional[Session] = None) -> int:
     """Finds documents without segments and splits them into atomic units with structural provenance.
 
     Args:
@@ -150,7 +149,68 @@ def _create_segment(
     )
     session.add(seg)
     session.flush() # Ensure ID is generated for parent tracking
+
+    # Step 1.2 & 1.3: Extract and persist anchors
+    anchors = extract_anchors(seg.content)
+    for anchor_data in anchors:
+        anchor = EntityAnchor(
+            segment_id=seg.id,
+            anchor_type=anchor_data["type"],
+            anchor_value=anchor_data["value"],
+            confidence=anchor_data["confidence"]
+        )
+        session.add(anchor)
+
     return seg.id
+
+def extract_anchors(text: str) -> List[dict]:
+    """Extracts and normalizes hard anchors (tickets, PRs, files) from text.
+    
+    Patterns:
+    - Jira: [A-Z]{2,10}-\d+
+    - GitHub PR/Issue: (#\d+) with prefix normalization
+    - File Refs: paths ending in code extensions
+    """
+    anchors = []
+    
+    # 1. Jira / Ticket IDs (Normalized to uppercase)
+    jira_pattern = re.compile(r'\b([A-Z]{2,10}-\d+)\b')
+    for match in jira_pattern.finditer(text):
+        anchors.append({
+            "type": AnchorType.TICKET,
+            "value": match.group(1).upper(),
+            "confidence": 1.0
+        })
+        
+    # 2. GitHub PRs/Issues (Normalized to #123)
+    # Pattern matches optional prefix and then #digits
+    gh_pattern = re.compile(r'(?i)(?:close|fix|ref|see)?\s*(#\d+)\b')
+    for match in gh_pattern.finditer(text):
+        anchors.append({
+            "type": AnchorType.PR,
+            "value": match.group(1), # group(1) is only the #digits part
+            "confidence": 1.0
+        })
+        
+    # 3. File References (Normalized to lowercase)
+    file_pattern = re.compile(r'\b([\w\-/]+\.(?:py|md|ts|go|json|yaml|rst))\b')
+    for match in file_pattern.finditer(text):
+        anchors.append({
+            "type": AnchorType.FILE_REF,
+            "value": match.group(1).lower(),
+            "confidence": 1.0
+        })
+
+    # 4. Error Codes (Basic patterns for stack trace indicators)
+    error_pattern = re.compile(r'\b(Traceback|Exception|RuntimeError|ValueError|TypeError|ERROR|CRITICAL)\b')
+    for match in error_pattern.finditer(text):
+         anchors.append({
+            "type": AnchorType.ERROR_CODE,
+            "value": match.group(1),
+            "confidence": 1.0
+        })
+        
+    return anchors
 
 def reconstruct_document(segments: List[DocSegment]) -> str:
     """Reconstructs a visual representation of the document from its segments.

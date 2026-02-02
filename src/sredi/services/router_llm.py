@@ -2,51 +2,58 @@ import logging
 import json
 from typing import Dict, Any, Optional
 from .llm_client import LLMClient, LLMClientError
-from .router_contract import RouterResult, RouterLabel, RecommendedState, RiskFlag, HardSignal
+from .router_contract import RouterResult, RouterLabel, RecommendedState, RiskFlag, HardSignal, ProofSpan
 
 logger = logging.getLogger(__name__)
 
-ROUTER_SYSTEM_PROMPT = """You are a senior technical auditor for SRED.ai.
-Analyze the provided document segment and classify it according to strict SRED (Scientific Research and Experimental Development) criteria.
+ROUTER_SYSTEM_PROMPT = """You are ROUTER_LLM for a Zero-Trust SR&ED document triage system.
 
-### GOAL
-Determine if the segment contains technical evidence of R&D activity (e.g., technical challenges, architectural decisions, testing results, technical constraints).
+You will be given:
+1) SEGMENT TO CLASSIFY: The target text you must analyze and quote from.
+2) CONTEXT BEFORE/AFTER: Surrounding text to help you understand the segment's meaning.
 
-### OUTPUT FORMAT
-You MUST output a valid JSON object only. No prose.
-The JSON must follow this structure:
+Your job is to:
+1) Choose a routing label for the SEGMENT TO CLASSIFY.
+2) Provide verifiable evidence as VERBATIM QUOTES copied EXACTLY from the SEGMENT TO CLASSIFY only.
+
+CRITICAL ZERO-TRUST RULES (DO NOT VIOLATE)
+- You MUST NOT copy quotes from the CONTEXT sections. Quotes MUST come from the "SEGMENT TO CLASSIFY" block.
+- You MUST NOT paraphrase, summarize, or rewrite any evidence.
+- Evidence MUST be a single contiguous substring copied EXACTLY from the provided segment text.
+- Preserve ALL characters exactly: whitespace, punctuation, Markdown symbols (*, **, `, [, ], #, -, >), quotes, and capitalization.
+- Do NOT use ellipses (...) inside quotes.
+- Do NOT stitch together multiple separated parts.
+
+OUTPUT FORMAT (STRICT JSON ONLY)
+Return ONLY valid JSON with this exact schema:
+
 {
-    "label": "TECHNICAL" | "FINANCIAL" | "AMBIGUOUS" | "NOISE",
-    "confidence": float (0.0 to 1.0),
-    "signals": ["code_block", "stack_trace", "exception_message", "architecture_component", "performance_metric", "test_result", "technical_constraint", "unknown_root_cause"],
-    "risk_flags": ["marketing_language", "sales_pricing_language", "legal_terms", "hr_performance", "no_technical_markers", "ambiguous_context", "contradictory_signals"],
-    "proof_spans": [
-        {
-            "quote": "verbatim substring from input",
-            "kind": "optional category"
-        }
-    ],
-    "recommended_state": "INDEX_READY" | "REVIEW" | "NOISE",
-    "reasoning": "string (max 800 chars)"
+  "final_state": "INDEX_READY" | "REVIEW" | "NOISE",
+  "proofs": [
+    {
+      "quote": "<verbatim substring copied exactly from the SEGMENT TO CLASSIFY>",
+      "reason": "<1 short sentence explaining why this quote supports the chosen final_state>"
+    }
+  ]
 }
 
-### CRITICAL RULES FOR PROOF SPANS (ZERO-TRUST)
-1. You MUST copy text EXACTLY from the segment.
-2. Do NOT paraphrase. Do NOT summarize.
-3. Preserve ALL Markdown symbols (*, **, backticks, brackets, comments).
-4. Preserve ALL whitespace, newlines, and punctuation EXACTLY.
-5. The quote MUST be contiguous and taken from ONE place in the segment.
-6. No ellipses (...), no stitched fragments, no partial word cuts.
-7. Avoid multi-line quotes if possible; pick a single sentence or continuous phrase within one line.
-8. If the label is TECHNICAL and recommended_state is INDEX_READY, proof_spans MUST NOT be empty.
+EVIDENCE REQUIREMENTS
+- Provide 1 to 3 proofs.
+- Each quote should be 80 to 240 characters when possible.
+- If the SEGMENT TO CLASSIFY is shorter than 80 characters, copy the relevant portion exactly.
 
-### ABSTENTION RULE (NO_PROOF)
-If you cannot find a contiguous verbatim substring that supports your classification:
-- Set quote: ""
-- Set reasoning: "NO_PROOF: cannot provide verbatim quote"
-- Set recommended_state: "REVIEW" (even if label is TECHNICAL)
+WHEN TO ABSTAIN (IMPORTANT)
+If you cannot find a contiguous verbatim substring in the SEGMENT TO CLASSIFY that supports your classification:
+- Set final_state to "REVIEW"
+- Return an EMPTY proofs list: "proofs": []
+- Do NOT invent a quote. Do NOT quote from context.
 
-This is a strict requirement. Accuracy is more important than providing proof.
+ROUTING GUIDANCE (HOW TO PICK final_state)
+INDEX_READY: Clear technical evidence of R&D (uncertainty, systematic investigation, experiments).
+REVIEW: Ambiguous, incomplete, or mixed content.
+NOISE: Administrative, boilerplate, templates, checklists, marketing fluff.
+
+IMPORTANT: If the evidence for a technical label is only found in the CONTEXT sections and not in the SEGMENT TO CLASSIFY itself, you MUST choose REVIEW and return proofs: [].
 """
 
 async def llm_route_segment(
@@ -57,7 +64,7 @@ async def llm_route_segment(
     context_after: Optional[str] = None,
     parent_header: Optional[str] = None,
     policy_version: str = "router_policy_v1",
-    prompt_version: str = "router_prompt_v1",
+    prompt_version: str = "router_prompt_v4",
 ) -> RouterResult:
     """Routes a segment using LLM with context and fail-closed parsing."""
     
@@ -69,23 +76,67 @@ async def llm_route_segment(
         input_text += f"CONTEXT BEFORE:\n---\n{context_before}\n---\n\n"
     
     input_text += f"SEGMENT TO CLASSIFY:\n===\n{segment_text}\n===\n\n"
+    input_text += "Copy quotes from the segment text exactly. Do not paraphrase."
     
     if context_after:
-        input_text += f"CONTEXT AFTER:\n---\n{context_after}\n---\n"
+        input_text += f"\n\nCONTEXT AFTER:\n---\n{context_after}\n---\n"
 
     try:
-        raw_result = await client.classify_segment(
+        raw_llm_output = await client.classify_segment(
             segment_text=input_text,
             metadata={"system_prompt": ROUTER_SYSTEM_PROMPT}
         )
         
-        # Inject versions and model info
-        raw_result["policy_version"] = policy_version
-        raw_result["prompt_version"] = prompt_version
-        raw_result["model_id"] = f"{client.provider}:{client.model}"
+        # Map new schema to RouterResult
+        # final_state -> recommended_state
+        # proofs -> proof_spans
+        # reasoning -> combined reasons
         
-        # Parse into RouterResult
-        return RouterResult(**raw_result)
+        final_state_str = raw_llm_output.get("final_state", "REVIEW")
+        proofs = raw_llm_output.get("proofs", [])
+        
+        # Map final_state to internal Enum
+        state_map = {
+            "INDEX_READY": RecommendedState.INDEX_READY,
+            "REVIEW": RecommendedState.REVIEW,
+            "NOISE": RecommendedState.NOISE
+        }
+        recommended_state = state_map.get(final_state_str, RecommendedState.REVIEW)
+        
+        # Map label based on state (LLM doesn't output label directly anymore)
+        label_map = {
+            RecommendedState.INDEX_READY: RouterLabel.TECHNICAL,
+            RecommendedState.NOISE: RouterLabel.NOISE,
+            RecommendedState.REVIEW: RouterLabel.AMBIGUOUS
+        }
+        label = label_map.get(recommended_state, RouterLabel.AMBIGUOUS)
+        
+        proof_spans = []
+        all_reasons = []
+        for p in proofs:
+            proof_spans.append(ProofSpan(
+                quote=p.get("quote", ""),
+                kind="evidence"
+            ))
+            if p.get("reason"):
+                all_reasons.append(p.get("reason"))
+        
+        reasoning = " | ".join(all_reasons) if all_reasons else "No specific reasoning provided."
+        if not proofs:
+            reasoning = "NO_PROOF: cannot provide verbatim quote"
+        
+        return RouterResult(
+            label=label,
+            confidence=0.95 if recommended_state != RecommendedState.REVIEW else 0.5,
+            signals=[], # LLM doesn't output signals in new schema, will be filled by post-processing or updated later
+            risk_flags=[],
+            proof_spans=proof_spans,
+            recommended_state=recommended_state,
+            reasoning=reasoning[:800],
+            model_id=f"{client.provider}:{client.model}",
+            prompt_version=prompt_version,
+            policy_version=policy_version
+        )
 
     except (LLMClientError, Exception) as e:
         logger.error(f"LLM Routing failed or returned invalid JSON: {e}")

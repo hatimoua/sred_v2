@@ -75,3 +75,17 @@ class LinkType(str, Enum):
     """
     STRONG_ANCHOR = "STRONG_ANCHOR"
     WEAK_INFERENCE = "WEAK_INFERENCE"
+
+class AnchorType(str, Enum):
+    """Types of hard anchors extracted from segments.
+
+    Attributes:
+        TICKET: Jira or other issue tracking IDs (e.g. PROJ-123).
+        PR: GitHub Pull Request or Issue references (e.g. #123).
+        FILE_REF: References to source code files (e.g. src/main.py).
+        ERROR_CODE: System error codes or stack trace markers.
+    """
+    TICKET = "TICKET"
+    PR = "PR"
+    FILE_REF = "FILE_REF"
+    ERROR_CODE = "ERROR_CODE"

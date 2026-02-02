@@ -6,7 +6,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import CheckConstraint
 
 from pydantic import field_validator, model_validator
-from .enums import ProcessingState, ClassificationLabel, LinkType
+from .enums import ProcessingState, ClassificationLabel, LinkType, AnchorType
 
 # --- 6.1 Workspace ---
 class Workspace(SQLModel, table=True):
@@ -171,6 +171,7 @@ class DocSegment(SQLModel, table=True):
 
     decision_logs: List["SegmentDecisionLog"] = Relationship(back_populates="segment")
     project_links: List["ProjectSegmentLink"] = Relationship(back_populates="segment")
+    anchors: List["EntityAnchor"] = Relationship(back_populates="segment")
 
     @model_validator(mode='after')
     def validate_parent_id(self) -> "DocSegment":
@@ -243,3 +244,24 @@ class ProjectSegmentLink(SQLModel, table=True):
 
     project: Project = Relationship(back_populates="segment_links")
     segment: DocSegment = Relationship(back_populates="project_links")
+
+
+# --- 6.8 EntityAnchor (Hard Anchor) ---
+class EntityAnchor(SQLModel, table=True):
+    """A deterministic link (e.g., Jira ID, GitHub PR) extracted from a segment.
+
+    Attributes:
+        id: Unique identifier for the anchor.
+        segment_id: ID of the associated segment.
+        anchor_type: Type of the anchor (e.g., TICKET, PR).
+        anchor_value: Normalized identifier value (e.g., 'JIRA-123', '#456').
+        confidence: Confidence of the extraction (1.0 for regex).
+        segment: The associated segment relationship.
+    """
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    segment_id: uuid.UUID = Field(foreign_key="docsegment.id", index=True)
+    anchor_type: AnchorType
+    anchor_value: str = Field(index=True)
+    confidence: float = Field(default=1.0)
+
+    segment: DocSegment = Relationship(back_populates="anchors")

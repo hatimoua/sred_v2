@@ -1,4 +1,4 @@
-from .enums import ProcessingState, ClassificationLabel, LinkType
+from .enums import ProcessingState, ClassificationLabel, LinkType, AnchorType
 from .models import (
     Workspace,
     PipelineRun,
@@ -7,4 +7,5 @@ from .models import (
     DocSegment,
     SegmentDecisionLog,
     ProjectSegmentLink,
+    EntityAnchor,
 )
