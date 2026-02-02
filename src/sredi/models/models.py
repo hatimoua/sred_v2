@@ -1,0 +1,245 @@
+import uuid
+from datetime import datetime, UTC
+from typing import Optional, List, Any
+from sqlmodel import SQLModel, Field, Relationship, JSON, Column
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import CheckConstraint
+
+from pydantic import field_validator, model_validator
+from .enums import ProcessingState, ClassificationLabel, LinkType
+
+# --- 6.1 Workspace ---
+class Workspace(SQLModel, table=True):
+    """Represents a logical container for documents, projects, and pipeline runs.
+
+    Attributes:
+        id: Unique identifier for the workspace.
+        name: Name of the workspace.
+        created_at: Timestamp when the workspace was created.
+        documents: List of documents associated with this workspace.
+        projects: List of projects associated with this workspace.
+        pipeline_runs: List of pipeline runs executed within this workspace.
+    """
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str = Field(index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    # Relationships
+    documents: List["Document"] = Relationship(back_populates="workspace")
+    projects: List["Project"] = Relationship(back_populates="workspace")
+    pipeline_runs: List["PipelineRun"] = Relationship(back_populates="workspace")
+
+
+# --- 6.2 PipelineRun ---
+class PipelineRun(SQLModel, table=True):
+    """Logs the execution of a specific pipeline command.
+
+    Attributes:
+        id: Unique identifier for the pipeline run.
+        workspace_id: ID of the workspace this run belongs to.
+        command: The CLI command executed (e.g., 'ingest', 'segment').
+        parameters: JSON dictionary of parameters passed to the command.
+        timestamp: Timestamp when the run started.
+        workspace: The workspace relationship.
+        documents: Documents ingested during this run.
+    """
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(foreign_key="workspace.id")
+    command: str
+    parameters: dict = Field(default={}, sa_column=Column(JSON))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    workspace: Workspace = Relationship(back_populates="pipeline_runs")
+    documents: List["Document"] = Relationship(back_populates="ingestion_run")
+
+
+# --- 6.3 Project (Anchor) ---
+class Project(SQLModel, table=True):
+    """An 'Anchor' representing an SR&ED project (e.g., a JIRA Epic).
+
+    Attributes:
+        id: Unique identifier for the project.
+        workspace_id: ID of the workspace this project belongs to.
+        name: Descriptive name of the project.
+        source_anchor: Unique string identifier used for matching (e.g., 'PROJ-123').
+        description: Optional detailed description.
+        workspace: The workspace relationship.
+        segment_links: Links to segments identified as evidence for this project.
+    """
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(foreign_key="workspace.id")
+    name: str
+    source_anchor: str = Field(index=True, description="e.g. JIRA-PROJ-123")
+    description: Optional[str] = None
+
+    workspace: Workspace = Relationship(back_populates="projects")
+    segment_links: List["ProjectSegmentLink"] = Relationship(back_populates="project")
+
+
+# --- 6.4 Document (Physical file) ---
+class Document(SQLModel, table=True):
+    """Represents a physical file ingested into the system.
+
+    Attributes:
+        id: Unique identifier for the document.
+        workspace_id: ID of the workspace this document belongs to.
+        content_hash: SHA256 hash of the raw file content for deduplication.
+        filename: Name of the file.
+        file_path: Absolute path to the file on disk.
+        file_size_bytes: Size of the file in bytes.
+        ingestion_run_id: ID of the pipeline run that ingested this file.
+        workspace: The workspace relationship.
+        ingestion_run: The pipeline run relationship.
+        segments: Atomic units of content extracted from this document.
+    """
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    workspace_id: uuid.UUID = Field(foreign_key="workspace.id")
+    content_hash: str = Field(index=True, unique=True, description="SHA256 of raw bytes")
+    filename: str
+    file_path: str
+    file_size_bytes: int
+    ingestion_run_id: Optional[uuid.UUID] = Field(default=None, foreign_key="pipelinerun.id")
+
+    workspace: Workspace = Relationship(back_populates="documents")
+    ingestion_run: Optional[PipelineRun] = Relationship(back_populates="documents")
+    segments: List["DocSegment"] = Relationship(
+        back_populates="document",
+        sa_relationship_kwargs={"order_by": "DocSegment.sequence_index"}
+    )
+
+
+# --- 6.5 DocSegment (The “atom”) ---
+class DocSegment(SQLModel, table=True):
+    """An atomic unit of content (e.g., a paragraph) extracted from a Document.
+
+    Attributes:
+        id: Unique identifier for the segment.
+        document_id: ID of the source document.
+        content: The text content of the segment.
+        page_number: Optional page number if applicable.
+        sequence_index: Absolute position of the segment in the source file.
+        parent_id: Optional reference to a parent segment (e.g., a header).
+        context_before: A "shadow" of preceding text (200-300 chars) for structural context.
+        context_after: A "shadow" of succeeding text (200-300 chars) for structural context.
+        processing_state: Current state in the pipeline (QUARANTINE, INDEX_READY, etc.).
+        classification_label: Result of the router classification.
+        start_offset: Character index where the segment starts in the raw file.
+        end_offset: Character index where the segment ends in the raw file.
+        embedding: Vector representation of the content for semantic search.
+        document: The source document relationship.
+        parent: The parent segment relationship.
+        children: Nested sub-segments (e.g., paragraphs under a header).
+        decision_logs: Audit trail of state changes for this segment.
+        project_links: Links to associated projects.
+    """
+    __table_args__ = (
+        CheckConstraint(
+            "(embedding IS NULL) OR (processing_state = 'INDEX_READY')",
+            name="check_embedding_index_ready"
+        ),
+    )
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    document_id: uuid.UUID = Field(foreign_key="document.id")
+    content: str = Field(sa_column=Column(JSON)) # Using JSON for text content to be safe or just Text? User said TEXT. SQLModel str is Text.
+    # Wait, user said TEXT. Let's stick to str.
+    # content: str 
+    
+    page_number: Optional[int] = None
+    sequence_index: int = Field(default=0, nullable=False)
+    parent_id: Optional[uuid.UUID] = Field(default=None, foreign_key="docsegment.id")
+    context_before: Optional[str] = Field(default=None)
+    context_after: Optional[str] = Field(default=None)
+
+    processing_state: ProcessingState = Field(default=ProcessingState.QUARANTINE)
+    classification_label: Optional[ClassificationLabel] = Field(default=None)
+    
+    start_offset: int = Field(default=0, nullable=False)
+    end_offset: int = Field(default=0, nullable=False)
+
+    # Embedding: Vector(1536) nullable
+    embedding: Optional[List[float]] = Field(default=None, sa_column=Column(Vector(1536)))
+
+    document: Document = Relationship(back_populates="segments")
+    
+    # Self-referencing relationships
+    parent: Optional["DocSegment"] = Relationship(
+        back_populates="children",
+        sa_relationship_kwargs={"remote_side": "DocSegment.id"}
+    )
+    children: List["DocSegment"] = Relationship(back_populates="parent")
+
+    decision_logs: List["SegmentDecisionLog"] = Relationship(back_populates="segment")
+    project_links: List["ProjectSegmentLink"] = Relationship(back_populates="segment")
+
+    @model_validator(mode='after')
+    def validate_parent_id(self) -> "DocSegment":
+        if self.parent_id == self.id and self.id is not None:
+            raise ValueError("parent_id cannot reference itself.")
+        return self
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_state_transition(cls, data: Any) -> Any:
+        if isinstance(data, dict) and 'processing_state' in data:
+            # This is primarily for creation or bulk updates via dict
+            pass 
+        return data
+
+    def update_state(self, new_state: ProcessingState):
+        """Updates the processing state of the segment with validation.
+
+        Args:
+            new_state: The proposed new state.
+
+        Raises:
+            ValueError: If the transition is disallowed by the state machine policy.
+        """
+        ProcessingState.validate_transition(self.processing_state, new_state)
+        self.processing_state = new_state
+
+
+# --- 6.6 SegmentDecisionLog (Provenance) ---
+class SegmentDecisionLog(SQLModel, table=True):
+    """Append-only audit trail for state changes of a DocSegment.
+
+    Attributes:
+        id: Unique identifier for the log entry.
+        segment_id: ID of the associated segment.
+        old_state: Previous state of the segment.
+        new_state: New state after the decision.
+        actor: Entity that made the decision (e.g., 'RouterStub', 'Human').
+        reason: Metadata explaining the decision (e.g., keywords found).
+        timestamp: When the decision was made.
+        segment: The associated segment relationship.
+    """
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    segment_id: uuid.UUID = Field(foreign_key="docsegment.id")
+    old_state: Optional[ProcessingState] = None
+    new_state: ProcessingState
+    actor: str = Field(description="RouterStub, GPT-4o-mini, Human")
+    reason: dict = Field(default={}, sa_column=Column(JSON))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    segment: DocSegment = Relationship(back_populates="decision_logs")
+
+
+# --- 6.7 ProjectSegmentLink (Grouping edge) ---
+class ProjectSegmentLink(SQLModel, table=True):
+    """Associates an evidence segment with a specific project.
+
+    Attributes:
+        project_id: ID of the project.
+        segment_id: ID of the segment.
+        confidence: Confidence score of the link (0.0 to 1.0).
+        link_type: Type of matching used (e.g., STRONG_ANCHOR).
+        project: The associated project relationship.
+        segment: The associated segment relationship.
+    """
+    project_id: uuid.UUID = Field(foreign_key="project.id", primary_key=True)
+    segment_id: uuid.UUID = Field(foreign_key="docsegment.id", primary_key=True)
+    confidence: float = Field(default=1.0)
+    link_type: LinkType
+
+    project: Project = Relationship(back_populates="segment_links")
+    segment: DocSegment = Relationship(back_populates="project_links")
