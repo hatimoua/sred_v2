@@ -92,6 +92,7 @@ def ingest_directory(directory: Path, workspace_name: str = "default", session: 
                     existing_doc = session.exec(statement).first()
                     
                     if existing_doc:
+                        print(f"DEBUG: Skipping {file_path.name} (Hash: {content_hash[:8]}...) - Already exists in workspace {workspace.id}")
                         skipped_docs += 1
                         # We could optionally update file path if it moved, but MVP invariants say avoid processing duplicates.
                         continue

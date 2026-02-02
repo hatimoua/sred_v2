@@ -1,7 +1,7 @@
 import typer
 import subprocess
 from pathlib import Path
-from sqlmodel import select, delete, text, col
+from sqlmodel import select, delete, text, col, Session
 from .db import engine, get_session
 # Import models so SQLModel knows about them (though we use Alembic for migrations mostly)
 from .models import * 
@@ -198,6 +198,37 @@ def status(workspace: str = "default"):
     finally:
         session.close()
 
+def reset_db(session: Session = None):
+    """Wipes all data from the database.
+    
+    Args:
+        session: Optional session. If None, a new one is created.
+    """
+    if session is None:
+        session_gen = get_session()
+        session = next(session_gen)
+        should_close = True
+    else:
+        should_close = False
+        
+    try:
+        # Delete in order of dependencies
+        session.exec(delete(ProjectSegmentLink))
+        session.exec(delete(EntityAnchor))
+        session.exec(delete(SegmentDecisionLog))
+        session.exec(delete(DocSegment))
+        session.exec(delete(Document))
+        session.exec(delete(Project))
+        session.exec(delete(PipelineRun))
+        session.exec(delete(Workspace))
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        if should_close:
+            session.close()
+
 @app.command()
 def reset(hard: bool = typer.Option(False, "--hard", help="Wipe all data")):
     """Resets the workspace or wipes the entire database.
@@ -207,25 +238,11 @@ def reset(hard: bool = typer.Option(False, "--hard", help="Wipe all data")):
     """
     if hard:
         typer.confirm("Are you sure you want to WIPE the database? This cannot be undone.", abort=True)
-        session_gen = get_session()
-        session = next(session_gen)
         try:
-            # Delete in order of dependencies
-            session.exec(delete(ProjectSegmentLink))
-            session.exec(delete(EntityAnchor))
-            session.exec(delete(SegmentDecisionLog))
-            session.exec(delete(DocSegment))
-            session.exec(delete(Document))
-            session.exec(delete(Project))
-            session.exec(delete(PipelineRun))
-            session.exec(delete(Workspace))
-            session.commit()
+            reset_db()
             typer.echo("Database wiped successfully.")
         except Exception as e:
             typer.echo(f"Error wiping database: {e}", err=True)
-            session.rollback()
-        finally:
-            session.close()
     else:
         typer.echo("Use --hard to wipe data. This command does nothing without it.")
 

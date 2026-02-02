@@ -6,7 +6,7 @@ import uuid
 from ..models import Document, DocSegment, ProcessingState, EntityAnchor, AnchorType
 from ..db import get_session
 
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst"}
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst", ".py"}
 
 def segment_documents(workspace_name: str = "default", session: Optional[Session] = None) -> int:
     """Finds documents without segments and splits them into atomic units with structural provenance.
