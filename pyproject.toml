@@ -26,3 +26,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sredi"]
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=1.3.0",
+]

@@ -10,7 +10,8 @@ from ..models import (
     DocSegment, 
     SegmentDecisionLog, 
     ProcessingState, 
-    ClassificationLabel
+    ClassificationLabel,
+    EntityAnchor
 )
 from ..db import get_session
 from .router_contract import (
@@ -136,6 +137,17 @@ async def node_classify_segment(state: RouterState) -> RouterState:
     segment = state["segment"]
     router_type = state["router_type"]
     shadow_mode = state["shadow_mode"]
+    session = state["db_session"]
+    
+    # 1. Fetch Structural Context (Hard Anchors)
+    related_context = None
+    anchors = session.exec(
+        select(EntityAnchor).where(EntityAnchor.segment_id == segment.id)
+    ).all()
+    
+    if anchors:
+        context_lines = [f"- [{a.anchor_type.value.upper()}] {a.anchor_value}" for a in anchors]
+        related_context = "\n".join(context_lines)
     
     result = None
     tournament_stub_result = None
@@ -149,6 +161,7 @@ async def node_classify_segment(state: RouterState) -> RouterState:
             segment_text=segment.content,
             context_before=segment.context_before,
             context_after=segment.context_after,
+            related_context=related_context,
             parent_header=None # TODO: Fetch parent header if available
         )
         
