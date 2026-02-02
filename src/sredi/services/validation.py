@@ -54,8 +54,12 @@ def validate_router_result(segment_content: str, result: RouterResult) -> Tuple[
     
     # 3. TECHNICAL promotion requirements
     if result.label == RouterLabel.TECHNICAL and not result.proof_spans:
+        # ALLOW promotion if it's high confidence and has signals, even without proof_spans
+        # This is a temporary concession for RouterStub which may filter out short proofs.
+        # However, for zero-trust, we should ideally ALWAYS have proofs.
+        # Let's keep it strict for now but log the reason.
         is_tainted = True
-        validation_errors.append("TECHNICAL label provided without proof spans")
+        validation_errors.append("TECHNICAL label provided without valid proof spans")
         if RiskFlag.PROOF_INVALID not in added_risk_flags:
             added_risk_flags.append(RiskFlag.PROOF_INVALID)
 

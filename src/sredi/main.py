@@ -212,6 +212,7 @@ def reset(hard: bool = typer.Option(False, "--hard", help="Wipe all data")):
         try:
             # Delete in order of dependencies
             session.exec(delete(ProjectSegmentLink))
+            session.exec(delete(EntityAnchor))
             session.exec(delete(SegmentDecisionLog))
             session.exec(delete(DocSegment))
             session.exec(delete(Document))

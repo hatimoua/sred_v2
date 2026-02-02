@@ -26,6 +26,9 @@ from .router_llm import llm_route_segment
 # Stub keyword patterns for technical evidence and their signals
 TECH_PATTERNS = [
     {"pattern": r"architecture", "signal": HardSignal.ARCHITECTURE_COMPONENT, "strength": "weak"},
+    {"pattern": r"infrastructure", "signal": HardSignal.ARCHITECTURE_COMPONENT, "strength": "weak"},
+    {"pattern": r"implementation", "signal": HardSignal.TECHNICAL_CONSTRAINT, "strength": "weak"},
+    {"pattern": r"experimental", "signal": HardSignal.TECHNICAL_CONSTRAINT, "strength": "weak"},
     {"pattern": r"error", "signal": HardSignal.EXCEPTION_MESSAGE, "strength": "strong"},
     {"pattern": r"exception", "signal": HardSignal.EXCEPTION_MESSAGE, "strength": "strong"},
     {"pattern": r"traceback", "signal": HardSignal.STACK_TRACE, "strength": "strong"},
@@ -61,12 +64,22 @@ class RouterStub:
             # Use CASE-INSENSITIVE regex
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                matched_patterns.append({"signal": signal, "strength": strength})
-                
-                # Create EXACTLY ONE ProofSpan for the first occurrence only
+                # Check if this matched pattern is a "short" one that needs a hard marker
+                # to pass zero-trust validation (if < 10 chars)
                 start, end = match.span()
-                # Zero-Trust Excerpt: exact slice of text[start:end]
                 excerpt = text[start:end]
+                
+                hard_markers = ["```", "traceback", "exception", "error", "stack trace", "`", "<!--", "-->"]
+                is_short = (end - start) < 10
+                has_marker = any(marker.lower() in excerpt.lower() for marker in hard_markers)
+                
+                # If it's short AND has no marker, it will fail validation.
+                # We only count it as a signal if it will pass validation OR if it's strong.
+                if is_short and not has_marker:
+                    # Skip this weak short signal to avoid validation failure
+                    continue
+
+                matched_patterns.append({"signal": signal, "strength": strength})
                 
                 proof_spans.append(ProofSpan(
                     quote=excerpt,

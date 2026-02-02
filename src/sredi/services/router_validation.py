@@ -48,9 +48,10 @@ def validate_proof_spans(segment_text: str, spans: List[ProofSpan]) -> Tuple[boo
         # Minimum length check (logic moved here to apply after anchoring)
         span_len = span.end - span.start
         # Broaden markers to include backticks and other common technical syntax
-        hard_markers = ["```", "Traceback", "Exception", "ERROR", "Stack trace", "`", "<!--", "-->"]
+        # Case-insensitive check for markers like ERROR/error
+        hard_markers = ["```", "traceback", "exception", "error", "stack trace", "`", "<!--", "-->"]
         if span_len < 10:
-            has_marker = any(marker in span.quote for marker in hard_markers)
+            has_marker = any(marker.lower() in span.quote.lower() for marker in hard_markers)
             if not has_marker:
                 errors.append(f"Span {i} too short ({span_len} chars) and contains no hard markers. Quote: '{span.quote}'")
 

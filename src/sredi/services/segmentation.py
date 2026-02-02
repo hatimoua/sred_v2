@@ -164,7 +164,7 @@ def _create_segment(
     return seg.id
 
 def extract_anchors(text: str) -> List[dict]:
-    """Extracts and normalizes hard anchors (tickets, PRs, files) from text.
+    r"""Extracts and normalizes hard anchors (tickets, PRs, files) from text.
     
     Patterns:
     - Jira: [A-Z]{2,10}-\d+
@@ -174,7 +174,7 @@ def extract_anchors(text: str) -> List[dict]:
     anchors = []
     
     # 1. Jira / Ticket IDs (Normalized to uppercase)
-    jira_pattern = re.compile(r'\b([A-Z]{2,10}-\d+)\b')
+    jira_pattern = re.compile(r'\b([A-Z]{2,10}-\d{1,10})\b')
     for match in jira_pattern.finditer(text):
         anchors.append({
             "type": AnchorType.TICKET,
@@ -202,7 +202,7 @@ def extract_anchors(text: str) -> List[dict]:
         })
 
     # 4. Error Codes (Basic patterns for stack trace indicators)
-    error_pattern = re.compile(r'\b(Traceback|Exception|RuntimeError|ValueError|TypeError|ERROR|CRITICAL)\b')
+    error_pattern = re.compile(r'\b(Traceback|Exception|RuntimeError|ValueError|TypeError|ERROR|CRITICAL)\b', re.IGNORECASE)
     for match in error_pattern.finditer(text):
          anchors.append({
             "type": AnchorType.ERROR_CODE,

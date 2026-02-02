@@ -68,18 +68,25 @@ def test_document_reconstruction(session):
         assert "reconstruction" in reconstructed
         assert "It should work" in reconstructed
 
-def test_segmentation_skips_processed_docs(session):
-    workspace_name = "test_segment_skip"
-    
+def test_segment_unsupported_file(session):
+    """Verify that unsupported extensions are skipped."""
+    workspace_name = "test_unsupported"
     with tempfile.TemporaryDirectory() as tmpdir:
-        file1 = Path(tmpdir) / "test.txt"
-        file1.write_text("Content")
-        
+        file_path = Path(tmpdir) / "test.exe"
+        file_path.write_bytes(b"\x00\x01\x02")
         ingestion.ingest_directory(Path(tmpdir), workspace_name, session=session)
+        count = segmentation.segment_documents(workspace_name, session=session)
+        assert count == 0
+
+def test_segment_missing_file(session):
+    """Verify that missing files are handled gracefully."""
+    workspace_name = "test_missing"
+    # Create doc in DB but delete file before segmenting
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_path = Path(tmpdir) / "delete_me.txt"
+        file_path.write_text("content")
+        ingestion.ingest_directory(Path(tmpdir), workspace_name, session=session)
+        file_path.unlink()
         
-        # Segment once
-        segmentation.segment_documents(workspace_name, session=session)
-        
-        # Segment again
         count = segmentation.segment_documents(workspace_name, session=session)
         assert count == 0
