@@ -160,6 +160,16 @@ def _create_segment(
             confidence=anchor_data["confidence"]
         )
         session.add(anchor)
+        
+    # Step 5.3: Semantic Ingestion Hook
+    try:
+        from .vector_store import VectorStoreService
+        # Use default path for PoC. In prod this comes from config.
+        vector_service = VectorStoreService()
+        vector_service.add_segment(seg)
+    except Exception as e:
+        # Fail safe: Do not stop ingestion if vector store fails
+        print(f"Vector store ingestion failed for segment {seg.id}: {e}")
 
     return seg.id
 

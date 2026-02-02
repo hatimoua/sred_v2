@@ -1,12 +1,17 @@
 import pytest
 from sqlmodel import SQLModel, create_engine, Session
+from sqlalchemy.pool import StaticPool
 from sredi.db import get_session
 from sredi.models.models import Workspace
 
 @pytest.fixture(name="session")
 def session_fixture():
-    # Use a check_same_thread=False for sqlite if needed, but here standard is fine.
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    # Use StaticPool to share the same in-memory database across threads
+    engine = create_engine(
+        "sqlite:///:memory:", 
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool
+    )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         yield session
