@@ -23,9 +23,9 @@ from .router_contract import (
     RiskFlag
 )
 from .validation import apply_router_decision
-import asyncio
 from .llm_client import LLMClient
 from .router_llm import llm_route_segment
+from .enrichment import EnrichmentService
 
 # Stub keyword patterns for technical evidence and their signals
 TECH_PATTERNS = [
@@ -139,14 +139,28 @@ async def node_classify_segment(state: RouterState) -> RouterState:
     shadow_mode = state["shadow_mode"]
     session = state["db_session"]
     
-    # 1. Fetch Structural Context (Hard Anchors)
+    # 1. Fetch and Enrich Structural Context (Hard Anchors)
     related_context = None
     anchors = session.exec(
         select(EntityAnchor).where(EntityAnchor.segment_id == segment.id)
     ).all()
     
     if anchors:
-        context_lines = [f"- [{a.anchor_type.value.upper()}] {a.anchor_value}" for a in anchors]
+        enricher = EnrichmentService()
+        context_lines = []
+        for a in anchors:
+            try:
+                description = enricher.resolve_anchor(a.anchor_type, a.anchor_value)
+                if description:
+                    context_line = f"- [{a.anchor_type.value.upper()}] {a.anchor_value}: \"{description}\""
+                else:
+                    context_line = f"- [{a.anchor_type.value.upper()}] {a.anchor_value}"
+            except Exception as e:
+                # Fail Safe: Non-blocking decoration
+                print(f"Error enriching anchor {a.anchor_value}: {e}")
+                context_line = f"- [{a.anchor_type.value.upper()}] {a.anchor_value}"
+            context_lines.append(context_line)
+            
         related_context = "\n".join(context_lines)
     
     result = None

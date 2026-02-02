@@ -27,13 +27,13 @@ async def test_graph_injects_context(session: Session):
     seg = DocSegment(
         id=uuid.uuid4(),
         document_id=doc.id,
-        content="This is a segment referencing JIRA-123.",
+        content="This is a segment referencing JIRA-123 and UNKNOWN-999.",
         processing_state=ProcessingState.QUARANTINE
     )
     session.add(seg)
     session.flush()
 
-    # 3. Setup - Create EntityAnchors
+    # 3. Setup - Create EntityAnchors (one known, one unknown)
     anchor1 = EntityAnchor(
         segment_id=seg.id,
         anchor_type=AnchorType.TICKET,
@@ -42,8 +42,8 @@ async def test_graph_injects_context(session: Session):
     )
     anchor2 = EntityAnchor(
         segment_id=seg.id,
-        anchor_type=AnchorType.PR,
-        anchor_value="#45",
+        anchor_type=AnchorType.TICKET,
+        anchor_value="UNKNOWN-999",
         confidence=1.0
     )
     session.add(anchor1)
@@ -78,13 +78,17 @@ async def test_graph_injects_context(session: Session):
         )
         await graph.ainvoke(initial_state)
 
-        # 5. Assertion - Verify context injection
+        # 5. Assertion - Verify enriched context delivery
         assert mock_llm.called
         args, kwargs = mock_llm.call_args
         related_context = kwargs.get("related_context")
         
         assert related_context is not None
+        # Verify Enriched Anchor (Known ID)
         assert "JIRA-123" in related_context
-        assert "#45" in related_context
-        assert "[TICKET]" in related_context.upper()
-        assert "[PR]" in related_context.upper()
+        assert "Critical Sharding Failure" in related_context
+        
+        # Verify Fallback Anchor (Unknown ID)
+        assert "UNKNOWN-999" in related_context
+        # It should appear without a description
+        assert "UNKNOWN-999\"" not in related_context 
