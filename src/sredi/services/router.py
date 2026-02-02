@@ -1,7 +1,10 @@
 import re
-from typing import List, Optional, Tuple, Sequence
+from typing import List, Optional, Tuple, Sequence, TypedDict, Annotated
 from sqlmodel import Session, select
 from datetime import datetime, UTC
+import asyncio
+
+from langgraph.graph import StateGraph, START, END
 
 from ..models import (
     DocSegment, 
@@ -38,6 +41,15 @@ TECH_PATTERNS = [
     {"pattern": r"schema", "signal": HardSignal.TECHNICAL_CONSTRAINT, "strength": "weak"},
     {"pattern": r"\b(pytest|unit test|integration test|regression|benchmark|load test)\b", "signal": HardSignal.TEST_RESULT, "strength": "weak"},
 ]
+
+class RouterState(TypedDict):
+    """State managed by the LangGraph router workflow."""
+    segment: DocSegment
+    result: Optional[RouterResult]
+    tournament_stub_result: Optional[RouterResult]
+    shadow_mode: bool
+    router_type: str
+    db_session: Session
 
 class RouterStub:
     """A deterministic stub implementation of the routing logic emitting structured RouterResults."""
@@ -119,6 +131,68 @@ class RouterStub:
             policy_version="router_policy_v1"
         )
 
+async def node_classify_segment(state: RouterState) -> RouterState:
+    """Graph node to classify a segment using either stub or LLM router."""
+    segment = state["segment"]
+    router_type = state["router_type"]
+    shadow_mode = state["shadow_mode"]
+    
+    result = None
+    tournament_stub_result = None
+    
+    if router_type == "stub":
+        result = RouterStub().classify(segment.content)
+    elif router_type == "llm":
+        client = LLMClient()
+        result = await llm_route_segment(
+            client,
+            segment_text=segment.content,
+            context_before=segment.context_before,
+            context_after=segment.context_after,
+            parent_header=None # TODO: Fetch parent header if available
+        )
+        
+        if shadow_mode:
+            tournament_stub_result = RouterStub().classify(segment.content)
+            
+    return {
+        **state,
+        "result": result,
+        "tournament_stub_result": tournament_stub_result
+    }
+
+def node_persist_decision(state: RouterState) -> RouterState:
+    """Graph node to persist the router decision to the database."""
+    session = state["db_session"]
+    segment = state["segment"]
+    result = state["result"]
+    shadow_mode = state["shadow_mode"]
+    tournament_stub_result = state["tournament_stub_result"]
+    
+    if result:
+        apply_router_decision(
+            session, 
+            segment, 
+            result, 
+            shadow_mode=shadow_mode, 
+            tournament_stub_result=tournament_stub_result
+        )
+        
+    return state
+
+def build_router_graph():
+    """Builds and compiles the LangGraph workflow for routing."""
+    workflow = StateGraph(RouterState)
+    
+    workflow.add_node("classify", node_classify_segment)
+    workflow.add_node("persist", node_persist_decision)
+    
+    workflow.add_edge(START, "classify")
+    workflow.add_edge("classify", "persist")
+    workflow.add_edge("persist", END)
+    
+    return workflow.compile()
+
 async def route_segments_async(
     limit: int = 100, 
     router_type: str = "stub", 
@@ -135,6 +209,7 @@ async def route_segments_async(
         should_close = False
     
     processed_count = 0
+    graph = build_router_graph()
     
     try:
         statement = select(DocSegment).where(
@@ -143,18 +218,23 @@ async def route_segments_async(
         
         segments = session.exec(statement).all()
         
-        if router_type == "stub":
-            router = RouterStub()
-            for seg in segments:
-                result = router.classify(seg.content)
-                apply_router_decision(session, seg, result, shadow_mode=shadow_mode)
-                processed_count += 1
-        elif router_type == "llm":
-            processed_count = await _route_llm_batch(
-                session, segments, shadow_mode, concurrency
-            )
-        else:
-            raise ValueError(f"Unknown router type: {router_type}")
+        semaphore = asyncio.Semaphore(concurrency)
+        
+        async def process_one(seg: DocSegment):
+            async with semaphore:
+                initial_state = RouterState(
+                    segment=seg,
+                    result=None,
+                    tournament_stub_result=None,
+                    shadow_mode=shadow_mode,
+                    router_type=router_type,
+                    db_session=session
+                )
+                await graph.ainvoke(initial_state)
+
+        tasks = [process_one(seg) for seg in segments]
+        await asyncio.gather(*tasks)
+        processed_count = len(segments)
         
         session.commit()
         
@@ -169,9 +249,9 @@ async def route_segments_async(
     return processed_count
 
 def route_segments(
-    limit: int = 100, 
-    router_type: str = "stub", 
-    shadow_mode: bool = False, 
+    limit: int = 100,
+    router_type: str = "stub",
+    shadow_mode: bool = False,
     concurrency: int = 5,
     session: Optional[Session] = None
 ) -> int:
@@ -183,44 +263,3 @@ def route_segments(
         concurrency=concurrency,
         session=session
     ))
-
-async def _route_llm_batch(
-    session: Session, 
-    segments: Sequence[DocSegment], 
-    shadow_mode: bool, 
-    concurrency: int
-) -> int:
-    """Processes segments with LLM router concurrently."""
-    client = LLMClient()
-    semaphore = asyncio.Semaphore(concurrency)
-    stub = RouterStub()
-    
-    async def process_one(seg: DocSegment):
-        async with semaphore:
-            # 1. Get LLM result
-            # Passing shadows and parent header for context
-            llm_result = await llm_route_segment(
-                client,
-                segment_text=seg.content,
-                context_before=seg.context_before,
-                context_after=seg.context_after,
-                parent_header=None # TODO: need to fetch parent header if available
-            )
-            
-            # 2. If shadow mode, we also need the stub result for tournament
-            stub_result = None
-            if shadow_mode:
-                stub_result = stub.classify(seg.content)
-            
-            # 3. Apply/Evaluate decision (Sync DB operation)
-            apply_router_decision(
-                session, 
-                seg, 
-                llm_result, 
-                shadow_mode=shadow_mode, 
-                tournament_stub_result=stub_result
-            )
-
-    tasks = [process_one(seg) for seg in segments]
-    await asyncio.gather(*tasks)
-    return len(segments)
