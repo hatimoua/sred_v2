@@ -8,4 +8,5 @@ from .models import (
     SegmentDecisionLog,
     ProjectSegmentLink,
     EntityAnchor,
+    WorkCluster,
 )

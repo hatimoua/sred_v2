@@ -53,3 +53,32 @@ class VectorStoreService:
         if results and results.get("documents"):
             return results["documents"][0]
         return []
+
+    def get_embeddings(self, segment_ids: List[str]) -> Dict[str, List[float]]:
+        """Retrieve embeddings for specific segments to support clustering.
+        
+        Args:
+            segment_ids: List of segment IDs (strings).
+            
+        Returns:
+            Dictionary mapping segment_id -> embedding vector.
+        """
+        if not segment_ids:
+            return {}
+            
+        # Fetch embeddings using get()
+        results = self.collection.get(
+            ids=segment_ids,
+            include=["embeddings"]
+        )
+        
+        embeddings_map = {}
+        # Explicit check for None to avoid numpy ambiguity if returned as array
+        if results and results.get("ids") is not None and results.get("embeddings") is not None:
+            ids = results["ids"]
+            embeddings = results["embeddings"]
+            
+            for i, seg_id in enumerate(ids):
+                embeddings_map[seg_id] = embeddings[i]
+                
+        return embeddings_map

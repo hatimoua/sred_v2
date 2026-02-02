@@ -199,35 +199,30 @@ def status(workspace: str = "default"):
         session.close()
 
 def reset_db(session: Session = None):
-    """Wipes all data from the database.
+    """Wipes all data from the database and recreates tables to apply schema changes.
     
     Args:
-        session: Optional session. If None, a new one is created.
+        session: Optional session. (Unused if dropping tables, kept for compatibility)
     """
-    if session is None:
-        session_gen = get_session()
-        session = next(session_gen)
-        should_close = True
-    else:
-        should_close = False
+    from sqlmodel import SQLModel
+    
+    # Close any active sessions implicitly by disposing the engine connection pool if possible,
+    # but strictly dropping tables might require closing active connections.
+    # For local dev with SQLite/Postgres, drop_all usually works if no other locks.
+    
+    # We ignore the passed session for the schema reset.
+    if session:
+        session.close()
         
     try:
-        # Delete in order of dependencies
-        session.exec(delete(ProjectSegmentLink))
-        session.exec(delete(EntityAnchor))
-        session.exec(delete(SegmentDecisionLog))
-        session.exec(delete(DocSegment))
-        session.exec(delete(Document))
-        session.exec(delete(Project))
-        session.exec(delete(PipelineRun))
-        session.exec(delete(Workspace))
-        session.commit()
+        typer.echo("Dropping all tables...")
+        SQLModel.metadata.drop_all(engine)
+        typer.echo("Creating all tables...")
+        SQLModel.metadata.create_all(engine)
+        typer.echo("Schema reset complete.")
     except Exception as e:
-        session.rollback()
+        typer.echo(f"Error resetting schema: {e}", err=True)
         raise e
-    finally:
-        if should_close:
-            session.close()
 
 @app.command()
 def reset(hard: bool = typer.Option(False, "--hard", help="Wipe all data")):
