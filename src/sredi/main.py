@@ -1,7 +1,7 @@
 import typer
 import subprocess
 from pathlib import Path
-from sqlmodel import select, delete, text, col
+from sqlmodel import select, delete, text, col, Session
 from .db import engine, get_session
 # Import models so SQLModel knows about them (though we use Alembic for migrations mostly)
 from .models import * 
@@ -198,6 +198,32 @@ def status(workspace: str = "default"):
     finally:
         session.close()
 
+def reset_db(session: Session = None):
+    """Wipes all data from the database and recreates tables to apply schema changes.
+    
+    Args:
+        session: Optional session. (Unused if dropping tables, kept for compatibility)
+    """
+    from sqlmodel import SQLModel
+    
+    # Close any active sessions implicitly by disposing the engine connection pool if possible,
+    # but strictly dropping tables might require closing active connections.
+    # For local dev with SQLite/Postgres, drop_all usually works if no other locks.
+    
+    # We ignore the passed session for the schema reset.
+    if session:
+        session.close()
+        
+    try:
+        typer.echo("Dropping all tables...")
+        SQLModel.metadata.drop_all(engine)
+        typer.echo("Creating all tables...")
+        SQLModel.metadata.create_all(engine)
+        typer.echo("Schema reset complete.")
+    except Exception as e:
+        typer.echo(f"Error resetting schema: {e}", err=True)
+        raise e
+
 @app.command()
 def reset(hard: bool = typer.Option(False, "--hard", help="Wipe all data")):
     """Resets the workspace or wipes the entire database.
@@ -207,25 +233,11 @@ def reset(hard: bool = typer.Option(False, "--hard", help="Wipe all data")):
     """
     if hard:
         typer.confirm("Are you sure you want to WIPE the database? This cannot be undone.", abort=True)
-        session_gen = get_session()
-        session = next(session_gen)
         try:
-            # Delete in order of dependencies
-            session.exec(delete(ProjectSegmentLink))
-            session.exec(delete(EntityAnchor))
-            session.exec(delete(SegmentDecisionLog))
-            session.exec(delete(DocSegment))
-            session.exec(delete(Document))
-            session.exec(delete(Project))
-            session.exec(delete(PipelineRun))
-            session.exec(delete(Workspace))
-            session.commit()
+            reset_db()
             typer.echo("Database wiped successfully.")
         except Exception as e:
             typer.echo(f"Error wiping database: {e}", err=True)
-            session.rollback()
-        finally:
-            session.close()
     else:
         typer.echo("Use --hard to wipe data. This command does nothing without it.")
 

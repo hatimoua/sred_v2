@@ -34,13 +34,26 @@ class LLMClient:
     async def classify_segment(self, *, segment_text: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Sends segment text to LLM and returns parsed JSON dict."""
         if self.provider == "openai":
-            return await self._call_openai(segment_text, metadata)
+            return await self._call_openai(segment_text, metadata, json_mode=True)
         elif self.provider == "gemini":
-            return await self._call_gemini(segment_text, metadata)
+            return await self._call_gemini(segment_text, metadata, json_mode=True)
         else:
             raise LLMClientError(f"Unsupported provider: {self.provider}")
 
-    async def _call_openai(self, segment_text: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    async def generate_text(self, prompt: str, system_prompt: str = "You are a helpful assistant.") -> str:
+        """Sends a prompt to LLM and returns the raw text response."""
+        metadata = {"system_prompt": system_prompt}
+        if self.provider == "openai":
+            # For text generation, we call _call_openai with json_mode=False
+            result = await self._call_openai(prompt, metadata, json_mode=False)
+            return result.get("text", "")
+        elif self.provider == "gemini":
+            result = await self._call_gemini(prompt, metadata, json_mode=False)
+            return result.get("text", "")
+        else:
+            raise LLMClientError(f"Unsupported provider: {self.provider}")
+
+    async def _call_openai(self, segment_text: str, metadata: Dict[str, Any], json_mode: bool = True) -> Dict[str, Any]:
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -53,18 +66,23 @@ class LLMClient:
                 {"role": "user", "content": segment_text}
             ],
             "temperature": self.temperature,
-            "response_format": {"type": "json_object"}
         }
+        
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
         response_data = await self._request_with_retry(url, headers, payload)
         try:
             content = response_data["choices"][0]["message"]["content"]
-            return json.loads(content)
+            if json_mode:
+                return json.loads(content)
+            else:
+                return {"text": content}
         except (KeyError, IndexError, json.JSONDecodeError) as e:
             logger.error(f"Failed to parse OpenAI response: {e}")
             raise LLMClientError(f"Invalid OpenAI response structure: {e}")
 
-    async def _call_gemini(self, segment_text: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    async def _call_gemini(self, segment_text: str, metadata: Dict[str, Any], json_mode: bool = True) -> Dict[str, Any]:
         # Gemini implementation using REST API
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         headers = {"Content-Type": "application/json"}
@@ -81,16 +99,21 @@ class LLMClient:
             ],
             "generationConfig": {
                 "temperature": self.temperature,
-                "responseMimeType": "application/json"
             }
         }
+        
+        if json_mode:
+            payload["generationConfig"]["responseMimeType"] = "application/json"
 
         response_data = await self._request_with_retry(url, headers, payload)
         
         try:
             # Parse Gemini's specific response structure
             content = response_data["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(content)
+            if json_mode:
+                return json.loads(content)
+            else:
+                return {"text": content}
         except (KeyError, IndexError, json.JSONDecodeError) as e:
             logger.error(f"Failed to parse Gemini response: {e}")
             raise LLMClientError(f"Invalid Gemini response structure: {e}")

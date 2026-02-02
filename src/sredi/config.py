@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     LLM_TIMEOUT: int = 30
     LLM_MAX_RETRIES: int = 2
 
+    # Tournament Config
+    SHADOW_MODE: bool = True       # ENABLED: Run both routers
+    ROUTER_TYPE: str = "llm"       # PRIMARY: The Context-Aware Router
+
     model_config = SettingsConfigDict(
         env_file=".env", 
         env_file_encoding="utf-8",

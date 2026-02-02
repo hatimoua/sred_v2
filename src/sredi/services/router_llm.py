@@ -63,6 +63,7 @@ async def llm_route_segment(
     context_before: Optional[str] = None,
     context_after: Optional[str] = None,
     related_context: Optional[str] = None,
+    semantic_context: Optional[str] = None,
     parent_header: Optional[str] = None,
     policy_version: str = "router_policy_v1",
     prompt_version: str = "router_prompt_v4",
@@ -74,6 +75,9 @@ async def llm_route_segment(
     if related_context:
         input_text += f"### STRUCTURAL CONTEXT (METADATA ONLY)\nThe following entities are linked to this segment. Use them to understand the technical intent (e.g. recognizing a bug fix vs maintenance).\n\n{related_context}\n\nCRITICAL RULES:\n1. You MUST NOT quote from the \"STRUCTURAL CONTEXT\" section.\n2. Your \"proof_spans\" must ONLY come from the \"SEGMENT TO CLASSIFY\" block below.\n3. If the context implies R&D but the segment text has zero evidence, you must still classify as AMBIGUOUS or NOISE.\n\n"
     
+    if semantic_context:
+        input_text += f"### RECALLED MEMORY (SEMANTIC MATCHES)\nThe following are PAST segments that are semantically similar to the current one. Use them as reference for how similar content might be classified or phrased.\n\n{semantic_context}\n\nCRITICAL RULE: These are PAST segments. Do NOT confuse them with the CURRENT segment.\n\n"
+
     if parent_header:
         input_text += f"PARENT HEADER: {parent_header}\n\n"
     if context_before:

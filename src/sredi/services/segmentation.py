@@ -6,7 +6,7 @@ import uuid
 from ..models import Document, DocSegment, ProcessingState, EntityAnchor, AnchorType
 from ..db import get_session
 
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst"}
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst", ".py"}
 
 def segment_documents(workspace_name: str = "default", session: Optional[Session] = None) -> int:
     """Finds documents without segments and splits them into atomic units with structural provenance.
@@ -160,6 +160,16 @@ def _create_segment(
             confidence=anchor_data["confidence"]
         )
         session.add(anchor)
+        
+    # Step 5.3: Semantic Ingestion Hook
+    try:
+        from .vector_store import VectorStoreService
+        # Use default path for PoC. In prod this comes from config.
+        vector_service = VectorStoreService()
+        vector_service.add_segment(seg)
+    except Exception as e:
+        # Fail safe: Do not stop ingestion if vector store fails
+        print(f"Vector store ingestion failed for segment {seg.id}: {e}")
 
     return seg.id
 

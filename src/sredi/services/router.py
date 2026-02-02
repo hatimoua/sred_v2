@@ -26,6 +26,7 @@ from .validation import apply_router_decision
 from .llm_client import LLMClient
 from .router_llm import llm_route_segment
 from .enrichment import EnrichmentService
+from .vector_store import VectorStoreService
 
 # Stub keyword patterns for technical evidence and their signals
 TECH_PATTERNS = [
@@ -51,6 +52,7 @@ class RouterState(TypedDict):
     shadow_mode: bool
     router_type: str
     db_session: Session
+    semantic_context: Optional[str]
 
 class RouterStub:
     """A deterministic stub implementation of the routing logic emitting structured RouterResults."""
@@ -138,6 +140,7 @@ async def node_classify_segment(state: RouterState) -> RouterState:
     router_type = state["router_type"]
     shadow_mode = state["shadow_mode"]
     session = state["db_session"]
+    semantic_context = state.get("semantic_context")
     
     # 1. Fetch and Enrich Structural Context (Hard Anchors)
     related_context = None
@@ -176,6 +179,7 @@ async def node_classify_segment(state: RouterState) -> RouterState:
             context_before=segment.context_before,
             context_after=segment.context_after,
             related_context=related_context,
+            semantic_context=semantic_context,
             parent_header=None # TODO: Fetch parent header if available
         )
         
@@ -186,6 +190,33 @@ async def node_classify_segment(state: RouterState) -> RouterState:
         **state,
         "result": result,
         "tournament_stub_result": tournament_stub_result
+    }
+
+def node_recall_context(state: RouterState) -> RouterState:
+    """Graph node to recall semantically similar past segments."""
+    segment = state["segment"]
+    semantic_context = None
+    
+    try:
+        # Use default path for PoC. In prod this comes from config.
+        vector_service = VectorStoreService()
+        # Query for more than needed to filter out exact self-match
+        results = vector_service.search_similar(segment.content, n_results=5)
+        
+        if results:
+            # Simple dedup to avoid showing the exact same segment if it was just indexed
+            matches = [r for r in results if r != segment.content][:3]
+            
+            if matches:
+                formatted_matches = [f'- "{m}"' for m in matches]
+                semantic_context = "### RECALLED MEMORY (SEMANTIC MATCHES)\n" + "\n".join(formatted_matches)
+                
+    except Exception as e:
+        print(f"Error recalling semantic context: {e}")
+        
+    return {
+        **state,
+        "semantic_context": semantic_context
     }
 
 def node_persist_decision(state: RouterState) -> RouterState:
@@ -211,10 +242,12 @@ def build_router_graph():
     """Builds and compiles the LangGraph workflow for routing."""
     workflow = StateGraph(RouterState)
     
+    workflow.add_node("recall", node_recall_context)
     workflow.add_node("classify", node_classify_segment)
     workflow.add_node("persist", node_persist_decision)
     
-    workflow.add_edge(START, "classify")
+    workflow.add_edge(START, "recall")
+    workflow.add_edge("recall", "classify")
     workflow.add_edge("classify", "persist")
     workflow.add_edge("persist", END)
     
@@ -255,7 +288,8 @@ async def route_segments_async(
                     tournament_stub_result=None,
                     shadow_mode=shadow_mode,
                     router_type=router_type,
-                    db_session=session
+                    db_session=session,
+                    semantic_context=None
                 )
                 await graph.ainvoke(initial_state)
 
