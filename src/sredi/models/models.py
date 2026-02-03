@@ -2,11 +2,10 @@ import uuid
 from datetime import datetime, UTC
 from typing import Optional, List, Any
 from sqlmodel import SQLModel, Field, Relationship, JSON, Column
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import CheckConstraint
 
 from pydantic import field_validator, model_validator
-from .enums import ProcessingState, ClassificationLabel, LinkType, AnchorType
+from .enums import ProcessingState, ClassificationLabel, AnchorType
 
 # --- 6.1 Workspace ---
 class Workspace(SQLModel, table=True):
@@ -26,7 +25,6 @@ class Workspace(SQLModel, table=True):
 
     # Relationships
     documents: List["Document"] = Relationship(back_populates="workspace")
-    projects: List["Project"] = Relationship(back_populates="workspace")
     pipeline_runs: List["PipelineRun"] = Relationship(back_populates="workspace")
     work_clusters: List["WorkCluster"] = Relationship(back_populates="workspace")
 
@@ -54,30 +52,7 @@ class PipelineRun(SQLModel, table=True):
     documents: List["Document"] = Relationship(back_populates="ingestion_run")
 
 
-# --- 6.3 Project (Anchor) ---
-class Project(SQLModel, table=True):
-    """An 'Anchor' representing an SR&ED project (e.g., a JIRA Epic).
-
-    Attributes:
-        id: Unique identifier for the project.
-        workspace_id: ID of the workspace this project belongs to.
-        name: Descriptive name of the project.
-        source_anchor: Unique string identifier used for matching (e.g., 'PROJ-123').
-        description: Optional detailed description.
-        workspace: The workspace relationship.
-        segment_links: Links to segments identified as evidence for this project.
-    """
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    workspace_id: uuid.UUID = Field(foreign_key="workspace.id")
-    name: str
-    source_anchor: str = Field(index=True, description="e.g. JIRA-PROJ-123")
-    description: Optional[str] = None
-
-    workspace: Workspace = Relationship(back_populates="projects")
-    segment_links: List["ProjectSegmentLink"] = Relationship(back_populates="project")
-
-
-# --- 6.4 WorkCluster (Grouped Evidence) ---
+# --- 6.3 WorkCluster (Grouped Evidence) ---
 class WorkCluster(SQLModel, table=True):
     """A semantic cluster of segments representing a coherent unit of work (Work Item).
 
@@ -190,9 +165,6 @@ class DocSegment(SQLModel, table=True):
     # Cluster FK
     cluster_id: Optional[uuid.UUID] = Field(default=None, foreign_key="workcluster.id")
 
-    # Embedding: Vector(1536) nullable
-    embedding: Optional[List[float]] = Field(default=None, sa_column=Column(Vector(1536)))
-
     document: Document = Relationship(back_populates="segments")
     cluster: Optional["WorkCluster"] = Relationship(back_populates="segments")
     
@@ -204,7 +176,6 @@ class DocSegment(SQLModel, table=True):
     children: List["DocSegment"] = Relationship(back_populates="parent")
 
     decision_logs: List["SegmentDecisionLog"] = Relationship(back_populates="segment")
-    project_links: List["ProjectSegmentLink"] = Relationship(back_populates="segment")
     anchors: List["EntityAnchor"] = Relationship(back_populates="segment")
 
     @model_validator(mode='after')
@@ -259,28 +230,7 @@ class SegmentDecisionLog(SQLModel, table=True):
     segment: DocSegment = Relationship(back_populates="decision_logs")
 
 
-# --- 6.7 ProjectSegmentLink (Grouping edge) ---
-class ProjectSegmentLink(SQLModel, table=True):
-    """Associates an evidence segment with a specific project.
-
-    Attributes:
-        project_id: ID of the project.
-        segment_id: ID of the segment.
-        confidence: Confidence score of the link (0.0 to 1.0).
-        link_type: Type of matching used (e.g., STRONG_ANCHOR).
-        project: The associated project relationship.
-        segment: The associated segment relationship.
-    """
-    project_id: uuid.UUID = Field(foreign_key="project.id", primary_key=True)
-    segment_id: uuid.UUID = Field(foreign_key="docsegment.id", primary_key=True)
-    confidence: float = Field(default=1.0)
-    link_type: LinkType
-
-    project: Project = Relationship(back_populates="segment_links")
-    segment: DocSegment = Relationship(back_populates="project_links")
-
-
-# --- 6.8 EntityAnchor (Hard Anchor) ---
+# --- 6.7 EntityAnchor (Hard Anchor) ---
 class EntityAnchor(SQLModel, table=True):
     """A deterministic link (e.g., Jira ID, GitHub PR) extracted from a segment.
 

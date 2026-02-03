@@ -5,7 +5,7 @@ from sqlmodel import select, delete, text, col, Session
 from .db import engine, get_session
 # Import models so SQLModel knows about them (though we use Alembic for migrations mostly)
 from .models import * 
-from .services import ingestion, segmentation, router as router_service, grouping, llm_client, router_llm
+from .services import ingestion, segmentation, router as router_service, llm_client, router_llm
 import asyncio
 import json
 
@@ -84,43 +84,6 @@ def route(
     )
     typer.echo(f"Routing complete. Processed {count} segments.")
 
-# Sub-app for anchors
-anchors_app = typer.Typer(help="Manage project anchors (DEPRECATED)")
-app.add_typer(anchors_app, name="anchors")
-
-@anchors_app.command("load")
-def load_anchors(file: Path, workspace: str = "default"):
-    """[DEPRECATED] Loads project anchors from a CSV file.
-    
-    This command is deprecated and will be removed in a future version.
-    Grouping logic is moving towards leveraging Shadow-Mode Tournament results.
-    """
-    typer.echo("Warning: 'anchors load' is deprecated. Grouping will soon rely on tournament results.", err=True)
-    if not file.exists():
-        typer.echo(f"File not found: {file}", err=True)
-        raise typer.Exit(code=1)
-    
-    count = grouping.load_anchors_from_csv(file, workspace)
-    typer.echo(f"Loaded {count} new anchors.")
-
-@app.command()
-def group(
-    workspace: str = "default",
-    tournament: bool = typer.Option(True, "--tournament/--no-tournament", help="Leverage Shadow-Mode Tournament results for grouping")
-):
-    """Groups linked evidence to projects.
-
-    By default, leverages the latest Shadow-Mode Tournament results to identify 
-    high-confidence technical evidence and project associations.
-
-    Args:
-        workspace: The name of the workspace to process. Defaults to "default".
-        tournament: Whether to use tournament results.
-    """
-    typer.echo(f"Grouping segments in workspace '{workspace}' (tournament={tournament})...")
-    count = grouping.group_segments(workspace, use_tournament=tournament)
-    typer.echo(f"Grouping complete. Created {count} links.")
-
 @app.command()
 def status(workspace: str = "default"):
     """Shows detailed system status for a workspace: counts of docs, segments by state, projects, and links.
@@ -162,15 +125,9 @@ def status(workspace: str = "default"):
         for d in decisions:
             actors[d.actor] = actors.get(d.actor, 0) + 1
 
-        # 4. Projects & Links Stats
-        projs = session.exec(select(Project).where(Project.workspace_id == ws.id)).all()
-        links_stmt = select(ProjectSegmentLink).join(Project).where(Project.workspace_id == ws.id)
-        links = session.exec(links_stmt).all()
-        
+        # 4. Clusters Stats
+        clusters = session.exec(select(WorkCluster).where(WorkCluster.workspace_id == ws.id)).all()
         index_ready_segs = [s for s in segs if s.processing_state == ProcessingState.INDEX_READY]
-        linked_index_ready_ids = {link.segment_id for link in links}
-        num_linked_index_ready = len([s for s in index_ready_segs if s.id in linked_index_ready_ids])
-        num_unlinked_index_ready = len(index_ready_segs) - num_linked_index_ready
 
         # Readable Output
         typer.echo(f"\n- Workspace: {workspace}")
@@ -181,20 +138,14 @@ def status(workspace: str = "default"):
         
         actor_str = ", ".join([f"{k}: {v}" for k, v in actors.items()])
         typer.echo(f"- Decisions: {len(decisions)} ({actor_str})")
-        typer.echo(f"- Projects: {len(projs)}")
-        typer.echo(f"- Links: {len(links)} (INDEX_READY linked: {num_linked_index_ready}, INDEX_READY unlinked: {num_unlinked_index_ready})")
+        typer.echo(f"- Clusters: {len(clusters)}")
+        typer.echo(f"- INDEX_READY segments: {len(index_ready_segs)}")
         
-        # Optional Top Projects (if helpful)
-        project_link_counts = {}
-        for link in links:
-            proj_name = link.project.name
-            project_link_counts[proj_name] = project_link_counts.get(proj_name, 0) + 1
-        top_projects = sorted(project_link_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        
-        if top_projects:
-            typer.echo("\nTop Projects:")
-            for name, count in top_projects:
-                typer.echo(f"  - {name}: {count} segments")
+        # Show top clusters
+        if clusters:
+            typer.echo("\nTop Clusters:")
+            for cluster in clusters[:5]:
+                typer.echo(f"  - {cluster.title}: {len(cluster.segments)} segments")
     finally:
         session.close()
 

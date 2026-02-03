@@ -9,14 +9,22 @@ from ..db import get_session
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".rst", ".py"}
 
 def segment_documents(workspace_name: str = "default", session: Optional[Session] = None) -> int:
-    """Finds documents without segments and splits them into atomic units with structural provenance.
+    """Finds documents without segments and splits them into atomic units.
+
+    Processes all documents in the workspace that have not yet been segmented.
+    Splits content by Markdown headers and double newlines, creating hierarchical
+    DocSegment records with context windows and extracted entity anchors.
 
     Args:
-        workspace_name: Name of the workspace to process. Defaults to "default".
-        session: Optional database session. If None, a new one is created and closed.
+        workspace_name: Name of the workspace to process.
+        session: Database session. If None, a new session is created and closed
+            automatically.
 
     Returns:
-        The total number of new segments created across all processed documents.
+        int: Total number of new segments created across all processed documents.
+
+    Raises:
+        Exception: Logs and continues on per-document errors without stopping.
     """
     if session is None:
         session_gen = get_session()
@@ -67,7 +75,7 @@ def segment_documents(workspace_name: str = "default", session: Optional[Session
                     if chunk_text.strip():
                         current_parent_id = _create_segment(
                             session, doc.id, chunk_text, last_pos, start, 
-                            content, sequence_index, current_parent_id, is_header=False
+                            content, sequence_index, current_parent_id, is_header=False, workspace_id=workspace.id
                         )
                         sequence_index += 1
                         total_segments += 1
@@ -77,7 +85,7 @@ def segment_documents(workspace_name: str = "default", session: Optional[Session
                     if boundary_text.startswith('#'):
                         current_parent_id = _create_segment(
                             session, doc.id, boundary_text, start, end, 
-                            content, sequence_index, None, is_header=True
+                            content, sequence_index, None, is_header=True, workspace_id=workspace.id
                         )
                         sequence_index += 1
                         total_segments += 1
@@ -89,7 +97,7 @@ def segment_documents(workspace_name: str = "default", session: Optional[Session
                 if final_chunk.strip():
                     _create_segment(
                         session, doc.id, final_chunk, last_pos, len(content), 
-                        content, sequence_index, current_parent_id, is_header=False
+                        content, sequence_index, current_parent_id, is_header=False, workspace_id=workspace.id
                     )
                     total_segments += 1
                 
@@ -115,23 +123,27 @@ def _create_segment(
     full_content: str,
     sequence_index: int,
     parent_id: Optional[uuid.UUID],
-    is_header: bool
+    is_header: bool,
+    workspace_id: Optional[uuid.UUID] = None
 ) -> uuid.UUID:
-    """Helper to create a DocSegment with exact offsets and context shadows.
+    """Creates a DocSegment with exact offsets, context windows, and anchors.
+
+    Extracts surrounding context (300 chars before/after), persists the segment,
+    extracts entity anchors, and indexes into the vector store.
 
     Args:
         session: Active database session.
-        doc_id: ID of the source document.
+        doc_id: UUID of the source document.
         text: Raw text content for this segment.
         start: Character start offset in the source file.
         end: Character end offset in the source file.
-        full_content: Entire content of the source file for context extraction.
-        sequence_index: Monotonic position index in the document.
-        parent_id: Optional ID of the parent header segment.
-        is_header: Flag indicating if this segment is a structural header.
+        full_content: Full source file content for context extraction.
+        sequence_index: Monotonic position index within the document.
+        parent_id: UUID of the parent header segment, or None for top-level.
+        is_header: Whether this segment is a structural header (e.g., `# Title`).
 
     Returns:
-        uuid.UUID: The generated ID of the new segment.
+        uuid.UUID: The generated ID of the newly created segment.
     """
     context_before = full_content[max(0, start - 300):start]
     context_after = full_content[end:end + 300]
@@ -164,22 +176,34 @@ def _create_segment(
     # Step 5.3: Semantic Ingestion Hook
     try:
         from .vector_store import VectorStoreService
-        # Use default path for PoC. In prod this comes from config.
-        vector_service = VectorStoreService()
-        vector_service.add_segment(seg)
+        vector_store = VectorStoreService()
+        vector_store.add_segment(seg, workspace_id=workspace_id)
     except Exception as e:
-        # Fail safe: Do not stop ingestion if vector store fails
-        print(f"Vector store ingestion failed for segment {seg.id}: {e}")
+        # Don't fail the whole document if vector store is down
+        print(f"Warning: Could not index segment {seg.id} in vector store: {e}")
 
     return seg.id
 
 def extract_anchors(text: str) -> List[dict]:
-    r"""Extracts and normalizes hard anchors (tickets, PRs, files) from text.
-    
-    Patterns:
-    - Jira: [A-Z]{2,10}-\d+
-    - GitHub PR/Issue: (#\d+) with prefix normalization
-    - File Refs: paths ending in code extensions
+    """Extracts and normalizes hard anchors from text content.
+
+    Scans for known patterns (Jira tickets, GitHub PRs, file references,
+    error codes) and returns normalized anchor dictionaries.
+
+    Supported patterns:
+        - Jira tickets: `[A-Z]{2,10}-\\d+` (e.g., PROJ-123)
+        - GitHub PR/Issue: `#\\d+` with optional prefix (close, fix, ref)
+        - File references: paths ending in .py, .md, .ts, .go, .json, .yaml, .rst
+        - Error codes: Traceback, Exception, RuntimeError, etc.
+
+    Args:
+        text: Raw text content to scan for anchors.
+
+    Returns:
+        list[dict]: List of anchor dictionaries with keys:
+            - type (AnchorType): The anchor classification.
+            - value (str): Normalized anchor value.
+            - confidence (float): Extraction confidence (always 1.0).
     """
     anchors = []
     
@@ -222,32 +246,3 @@ def extract_anchors(text: str) -> List[dict]:
         
     return anchors
 
-def reconstruct_document(segments: List[DocSegment]) -> str:
-    """Reconstructs a visual representation of the document from its segments.
-
-    This utility is used to verify the structural integrity of the segmentation
-    by joining the contents of all segments in their original sequence.
-
-    Args:
-        segments: List of DocSegments belonging to a single document.
-
-    Returns:
-        str: A concatenated string of all segment contents.
-    """
-    # Since segments are ordered by sequence_index via relationship, 
-    # but the input might be a filtered list, we sort manually to be sure.
-    sorted_segments = sorted(segments, key=lambda s: s.sequence_index)
-    
-    result = []
-    current_pos = 0
-    
-    # This reconstruction assumes segments cover the whole file or we fill gaps with whitespace.
-    # To be perfectly deterministic, we'd store the "gap" text too, 
-    # but for audit we check if content exists at correct offsets.
-    for seg in sorted_segments:
-        # If there's a gap between segments (like \n\n that were consumed by regex),
-        # we could fill it or just append.
-        # Strict reconstruction:
-        result.append(seg.content)
-        
-    return "\n\n".join(result) # Rough approximation for visual check

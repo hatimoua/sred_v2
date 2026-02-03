@@ -1,11 +1,13 @@
 /.DS_Store
-/.env
-/.pytest_cache
-/.venv
-/__pycache__/
+.env
+.pytest_cache
+.venv
+__pycache__/
 *.py[cod]
 .coverage
 htmlcov/
 .mypy_cache/
 .ruff_cache/
 audit_reports/
+chroma_db/
+*.sqlite3

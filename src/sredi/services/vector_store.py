@@ -15,16 +15,24 @@ class VectorStoreService:
         self.client = chromadb.PersistentClient(path=path)
         self.collection = self.client.get_or_create_collection(name=collection_name)
 
-    def add_segment(self, segment: DocSegment):
+    def add_segment(self, segment: DocSegment, workspace_id: Optional[Any] = None):
         """Add a segment to the vector store.
         
         Args:
             segment: The DocSegment to add.
+            workspace_id: Optional workspace ID to override segment.document.workspace_id.
         """
+        # Resolve workspace_id: passed > segment.document > unknown
+        if workspace_id is None:
+            if segment.document:
+                workspace_id = segment.document.workspace_id
+            else:
+                workspace_id = "unknown"
+
         # Ensure metadata values are strings or other supported types
         metadata = {
             "document_id": str(segment.document_id),
-            "workspace_id": str(segment.document.workspace_id) if segment.document else "unknown",
+            "workspace_id": str(workspace_id),
             "processing_state": str(segment.processing_state.value) if segment.processing_state else "unknown"
         }
         

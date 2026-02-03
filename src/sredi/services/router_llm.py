@@ -141,7 +141,7 @@ async def llm_route_segment(
             proof_spans=proof_spans,
             recommended_state=recommended_state,
             reasoning=reasoning[:800],
-            model_id=f"{client.provider}:{client.model}",
+            model_id=f"openai:{client.model}",
             prompt_version=prompt_version,
             policy_version=policy_version
         )
@@ -156,7 +156,7 @@ async def llm_route_segment(
             risk_flags=[RiskFlag.PROOF_INVALID],
             recommended_state=RecommendedState.REVIEW,
             reasoning=f"LLM Error or Invalid Output: {str(e)[:200]}",
-            model_id=f"{client.provider}:{client.model}",
+            model_id=f"openai:{client.model}",
             prompt_version=prompt_version,
             policy_version=policy_version
         )
