@@ -1,19 +1,14 @@
 import pytest
 from typer.testing import CliRunner
 from sredi.main import app
-from sredi.models.models import Workspace, Document, DocSegment, Project, ProjectSegmentLink
-from sredi.models.enums import ProcessingState, LinkType
+from sredi.models.models import Workspace, Document, DocSegment, WorkCluster
+from sredi.models.enums import ProcessingState
 import uuid
 
 runner = CliRunner()
 
 def test_status_command_basic(session):
     """Test the improved status command with various segments and states."""
-    # We need to use the real DB for CLI testing or mock the session in main.py
-    # Since main.py uses get_session() which yields from a real engine,
-    # we'll test the logic by calling a helper if we had one, 
-    # but for now let's just verify the CLI doesn't crash and shows workspace info.
-    
     # Setup workspace
     ws_name = "status_test_ws"
     ws = Workspace(name=ws_name)
@@ -40,17 +35,17 @@ def test_status_command_basic(session):
     session.add_all([seg1, seg2, seg3])
     session.commit()
     
-    # Add a project and link
-    proj = Project(workspace_id=ws.id, name="P1", source_anchor="A1")
-    session.add(proj)
+    # Add a cluster
+    cluster = WorkCluster(workspace_id=ws.id, title="Test Cluster")
+    session.add(cluster)
     session.commit()
-    session.refresh(proj)
+    session.refresh(cluster)
     
-    link = ProjectSegmentLink(project_id=proj.id, segment_id=seg3.id, confidence=1.0, link_type=LinkType.STRONG_ANCHOR)
-    session.add(link)
+    # Link segment to cluster
+    seg3.cluster_id = cluster.id
+    session.add(seg3)
     session.commit()
 
     # Note: Running the CLI via CliRunner will use the real DB in main.py.
     # For a pure unit test, we'd need to mock get_session in main.py.
-    # Given the environment, we'll assume the status logic works if the queries are correct.
     pass

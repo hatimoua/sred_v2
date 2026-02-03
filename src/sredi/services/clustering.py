@@ -75,8 +75,8 @@ class ClusteringService:
                 valid_vectors.append(emb)
                 
         if len(valid_segments) < 3:
-             print("Not enough segments with embeddings. Skipping.")
-             return 0
+            print("Not enough segments with embeddings. Skipping.")
+            return 0
              
         X = np.array(valid_vectors)
         

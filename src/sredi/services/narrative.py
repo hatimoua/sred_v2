@@ -69,39 +69,9 @@ Generate a concise, technical claim title for this group of work (e.g., "Refacto
 Return ONLY the title, no quotes, no preamble.
 Title:
 """
-            # Call LLM
-            # Note: LLMClient methods might be async or sync? 
-            # Checked llm_client.py before: it uses openai.AsyncOpenAI?
-            # Let's check if I should use await.
-            # In Phase 4, `router_llm.py` used `await self.client.chat.completions.create`.
-            # `LLMClient` likely wraps this.
-            # Let's assume LLMClient has a method `predict` or similar.
-            # Actually, I haven't implemented `LLMClient` generic helper yet, I used `RouterLLM` which was specific.
-            # Wait, I see `src/sredi/services/llm_client.py` in the file list from `find_by_name` earlier.
-            # Let me check `llm_client.py` content to be sure.
+
             
-            # Since I can't check right now without a tool call, and I want to batch, 
-            # I will assume standard usage or use `RouterLLM` logic if `LLMClient` isn't generic.
-            # Better: I'll read `llm_client.py` in the same turn if possible, but I can't use output to write file.
-            # I will rely on `RouterLLM` pattern or a simple OpenAI call if `LLMClient` is not suitable.
-            # Actually, `RouterLLM` returns a structured object.
-            # I probably need a simple text generation method.
-            
-            # Let's assume I need to implement a simple generation method in NarrativeService using OpenAI directly or `LLMClient`.
-            # I'll check `llm_client.py` first in a separate tool call to be safe? 
-            # No, I'll take a risk and assume `LLMClient` exists (it was in the file list).
-            # I'll assume it has a `get_completion` or similar.
-            # If not, I'll fix it.
-            
-            # Wait, better plan: I'll use `from openai import AsyncOpenAI` and `settings` directly here if `LLMClient` is unknown.
-            # But let's try to reuse `LLMClient`.
-            
-            try:
-                # Temporary: use direct OpenAI call for simplicity if LLMClient api is unknown
-                # But wait, I should look at `llm_client.py`.
-                # I'll write the file assuming `LLMClient` has `generate_text(prompt)`.
-                # If not, I'll edit.
-                
+            try:                
                 response_text = await self.llm.generate_text(prompt)
                 title = response_text.strip().strip('"')
                 
